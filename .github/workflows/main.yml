@@ -32,5 +32,7 @@ jobs:
             raw_extract.csv
             fdds/
             debug_search_page.html
+            debug_results_page.html
+            debug_detail_page.html
           if-no-files-found: warn
           retention-days: 14
