@@ -1,0 +1,38 @@
+name: Scrape Wisconsin DFI FDDs
+
+on:
+  workflow_dispatch: {}   # manual "Run workflow" button in the Actions tab
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90    # alphabet enumeration + per-filing PDF pulls, generously bounded
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        run: python scrape_wi_fdd.py
+
+      - name: Run extraction
+        run: python extract_item20_insurance.py
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: wi-fdd-results
+          path: |
+            list.csv
+            raw_extract.csv
+            fdds/
+            debug_search_page.html
+            debug_results_page.html
+            debug_detail_page.html
+          if-no-files-found: warn
+          retention-days: 14
