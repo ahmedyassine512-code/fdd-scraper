@@ -467,7 +467,18 @@ def main():
 
             pdf_bytes, pdf_url = find_pdf_link(session, detail_url)
             row["pdf_url"] = pdf_url or ""
-            fname = safe_filename(rec["name"]) + ".pdf"
+            # Confirmed against a real run: multiple distinct DFI
+            # registrations (different id= in detail_url -- different
+            # filing years/records) can share the same company name, e.g.
+            # "American Dairy Queen Corporation" appeared twice. Naming
+            # the output file by company name alone made the second
+            # download silently overwrite the first -- lost 6 of 52 PDFs
+            # this way on the first real run. The DFI filing id in
+            # detail_url is unique per registration, so fold it in.
+            filing_id = urllib.parse.parse_qs(
+                urllib.parse.urlsplit(detail_url).query
+            ).get("id", ["noid"])[0]
+            fname = f"{safe_filename(rec['name'])}_{filing_id}.pdf"
             dest = os.path.join(OUT_DIR, fname)
 
             if pdf_bytes:

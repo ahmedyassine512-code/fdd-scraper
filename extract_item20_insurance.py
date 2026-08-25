@@ -49,12 +49,45 @@ def extract_full_text(pdf_path):
 
 
 def extract_item20(full_text):
-    start = ITEM20_START.search(full_text)
-    if not start:
+    """
+    Find the real Item 20 section body -- not an informal front-matter
+    reference to it, and not its own Table-of-Contents line.
+
+    Confirmed against a real downloaded FDD (MIF, L.L.C., 1.26M chars):
+    "ITEM 20" matches six times -- three are the FTC-mandated intro FAQ
+    text nearly every FDD carries verbatim ("...you can find their names
+    in Item 20 or Exhibits L and M..."), one is the real Table of
+    Contents line ("ITEM 20 OUTLETS AND FRANCHISEE INFORMATION .... 113"),
+    and only the last one is the actual section heading followed by the
+    real outlet table. Taking the *first* match (the old behavior) always
+    grabbed one of the boilerplate hits, which is why item20_raw_text
+    kept landing around 250-320 characters across unrelated companies --
+    a real Item 20 section (a multi-page outlet-count table) is never
+    that short.
+
+    The boilerplate/TOC hits are all followed by the next "ITEM 21" match
+    within a few hundred characters at most; the real section runs for
+    thousands of characters (an actual table) before hitting Item 21's
+    own heading. So: check every (item20 match, next item21 match) pair
+    and keep the one with the largest gap -- on every FDD structure this
+    is, by a wide margin, the real section. Ties go to the later match,
+    since front-matter and the TOC always precede the real body.
+    """
+    starts = list(ITEM20_START.finditer(full_text))
+    if not starts:
         return ""
-    end = ITEM20_END.search(full_text, start.end())
-    chunk = full_text[start.start():end.start()] if end else full_text[start.start():start.start() + 4000]
-    return chunk.strip()
+
+    best_chunk = ""
+    best_gap = -1
+    for m in starts:
+        end = ITEM20_END.search(full_text, m.end())
+        end_pos = end.start() if end else min(len(full_text), m.start() + 20000)
+        gap = end_pos - m.start()
+        if gap >= best_gap:
+            best_gap = gap
+            best_chunk = full_text[m.start():end_pos]
+
+    return best_chunk.strip()
 
 
 def extract_insurance_paragraphs(full_text):
