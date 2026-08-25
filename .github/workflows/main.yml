@@ -3,6 +3,9 @@ name: Scrape Wisconsin DFI FDDs
 on:
   workflow_dispatch: {}   # manual "Run workflow" button in the Actions tab
 
+permissions:
+  contents: write   # needed so the debug-output push step below can push to the repo
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -18,12 +21,31 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run scraper
-        run: python scrape_wi_fdd.py
+        id: run_scraper
+        continue-on-error: true
+        run: python scrape_wi_fdd.py 2>&1 | tee scraper_output.log
 
       - name: Run extraction
-        run: python extract_item20_insurance.py
+        id: run_extraction
+        if: steps.run_scraper.outcome == 'success'
+        continue-on-error: true
+        run: python extract_item20_insurance.py 2>&1 | tee -a scraper_output.log
+
+      - name: Commit debug output to repo (readable outside Actions artifact storage)
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B debug-output
+          git add -f scraper_output.log list.csv raw_extract.csv \
+            debug_search_page.html debug_results_page.html debug_detail_page.html \
+            2>/dev/null || true
+          git add -f fdds/ 2>/dev/null || true
+          git commit -m "Automated debug output from run ${{ github.run_id }}" || echo "nothing to commit"
+          git push -f origin debug-output
 
       - name: Upload results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wi-fdd-results
@@ -34,5 +56,10 @@ jobs:
             debug_search_page.html
             debug_results_page.html
             debug_detail_page.html
+            scraper_output.log
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Fail job if scraper actually failed
+        if: steps.run_scraper.outcome == 'failure'
+        run: exit 1
