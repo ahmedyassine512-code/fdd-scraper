@@ -351,6 +351,28 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     session = requests.Session()
 
+    # Preflight: this site has been observed to be intermittently
+    # unreachable from specific GitHub Actions Azure regions (a WAF or
+    # similar likely blocks some cloud IP ranges) while working fine from
+    # others -- which region a given run lands on is outside our control.
+    # Rather than burning the full per-request timeout across the whole
+    # alphabet sweep only to find out at the end that every single one
+    # failed the same way, fail fast on one check and say so plainly.
+    try:
+        session.get(SEARCH_URL, headers=HEADERS, timeout=15)
+    except requests.exceptions.RequestException as e:
+        print(
+            "PREFLIGHT FAILED: could not reach "
+            f"{SEARCH_URL} at all ({e}). This looks like the intermittent "
+            "region-specific reachability issue, not a code problem -- "
+            "the site was reachable from other Actions runs and is "
+            "reachable from other infra. Just re-run the workflow; a new "
+            "run gets a new runner IP and has a good chance of landing "
+            "somewhere that isn't blocked.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     all_results = {}  # keyed by detail_url to de-dupe
     dumped_sample = False
 
