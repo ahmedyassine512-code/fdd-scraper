@@ -276,23 +276,48 @@ def fetch_all_pages(session, first_soup, first_hidden):
 DOWNLOAD_KEYWORDS = ("download", "fdd", "pdf", "viewfile", "getfile", "docview", "attachment")
 
 
+def _looks_like_pdf(resp):
+    """
+    True if an HTTP response is actually a PDF. Content-Type is checked
+    first, but ASP.NET file-download handlers on this site have been seen
+    to send application/octet-stream regardless of the real content, so
+    Content-Disposition and a raw %PDF magic-byte sniff are both checked
+    too, in that order, before giving up.
+    """
+    ctype = resp.headers.get("Content-Type", "").lower()
+    if "pdf" in ctype:
+        return True
+    cdisp = resp.headers.get("Content-Disposition", "").lower()
+    if ".pdf" in cdisp:
+        return True
+    return resp.content[:4] == b"%PDF"
+
+
 def find_pdf_link(session, detail_url):
     """
     Try a plain <a href="....pdf"> first (handles the simple case).
-    If that's not present -- confirmed to be the case on this site's detail
-    pages, which show 'File uploaded on <date>' with no visible link text
-    in the fetched view -- fall back to hunting for an ASP.NET postback
-    control (__doPostBack) whose target name suggests a download/view
-    action, and test each candidate by actually POSTing to it and checking
-    whether the response comes back as a PDF. This is a best-effort guess
-    absent seeing the raw control markup; see debug_detail_page.html
-    (dumped for the first detail page visited each run) for ground truth
-    if this still misses.
+
+    Confirmed via debug_detail_page.html (a real detail page, id=624395):
+    there is no __doPostBack anywhere on this page at all. The download
+    control is
+
+        <input id="upload_downloadFile" name="upload_downloadFile"
+               type="submit" value="Download"/>
+
+    -- a plain HTML submit input with no onclick/href. ASP.NET WebForms
+    treats that as an ordinary form submission: clicking it POSTs the
+    whole form (all __VIEWSTATE* / __EVENTVALIDATION hidden fields, plus
+    the button's own name=value pair) back to the page's own action URL,
+    with no __EVENTTARGET/__EVENTARGUMENT postback machinery involved at
+    all. That's Case 3 below, and it's the one that actually matches this
+    site. Case 2 (__doPostBack hunting) is kept as a fallback in case a
+    filing's detail page ever uses that pattern instead -- harmless no-op
+    when, as here, there's nothing for it to match.
 
     Returns (pdf_bytes_or_none, pdf_url_or_none). Exactly one of the two
     will be set on success: a direct href gives a URL to download
-    separately; a postback gives the bytes directly, since the postback
-    response *is* the file.
+    separately; a postback/submit gives the bytes directly, since the
+    response to that POST *is* the file.
     """
     r = session.get(detail_url, headers=HEADERS, timeout=30)
     r.raise_for_status()
@@ -305,12 +330,15 @@ def find_pdf_link(session, detail_url):
         if path.lower().endswith(".pdf"):
             return None, urllib.parse.urljoin(detail_url, href)
 
-    # Case 2: hunt for a postback-driven download control
     hidden = {
         inp.get("name"): inp.get("value", "")
         for inp in soup.find_all("input", type="hidden")
         if inp.get("name")
     }
+
+    # Case 2: __doPostBack-driven download control (fallback; not what this
+    # site actually uses, per debug_detail_page.html, but cheap to keep in
+    # case a filing's page differs)
     candidates = []
     for tag in soup.find_all(["a", "input", "button"]):
         for attr in ("href", "onclick"):
@@ -326,8 +354,22 @@ def find_pdf_link(session, detail_url):
         payload["__EVENTTARGET"] = target
         payload["__EVENTARGUMENT"] = arg
         resp = session.post(detail_url, data=payload, headers=HEADERS, timeout=30)
-        ctype = resp.headers.get("Content-Type", "").lower()
-        if "pdf" in ctype:
+        if _looks_like_pdf(resp):
+            return resp.content, None
+
+    # Case 3: plain <input type="submit"> / <button type="submit"> download
+    # control -- the actual mechanism on this site, confirmed above.
+    for tag in soup.find_all(["input", "button"]):
+        ttype = (tag.get("type") or "").lower()
+        name = tag.get("name") or ""
+        if ttype != "submit" or not name:
+            continue
+        if not any(k in name.lower() for k in DOWNLOAD_KEYWORDS):
+            continue
+        payload = dict(hidden)
+        payload[name] = tag.get("value", "Download")
+        resp = session.post(detail_url, data=payload, headers=HEADERS, timeout=30)
+        if _looks_like_pdf(resp):
             return resp.content, None
 
     return None, None
