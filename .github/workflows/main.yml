@@ -23,13 +23,18 @@ jobs:
       - name: Run scraper
         id: run_scraper
         continue-on-error: true
-        run: python scrape_wi_fdd.py 2>&1 | tee scraper_output.log
+        run: |
+          python scrape_wi_fdd.py 2>&1 | tee scraper_output.log
+          echo "${PIPESTATUS[0]}" > scraper_exit_code.txt
+          exit "$(cat scraper_exit_code.txt)"
 
       - name: Run extraction
         id: run_extraction
         if: steps.run_scraper.outcome == 'success'
         continue-on-error: true
-        run: python extract_item20_insurance.py 2>&1 | tee -a scraper_output.log
+        run: |
+          python extract_item20_insurance.py 2>&1 | tee -a scraper_output.log
+          echo "${PIPESTATUS[0]}" >> scraper_exit_code.txt
 
       - name: Commit debug output to repo (readable outside Actions artifact storage)
         if: always()
@@ -37,10 +42,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B debug-output
-          git add -f scraper_output.log list.csv raw_extract.csv \
-            debug_search_page.html debug_results_page.html debug_detail_page.html \
-            2>/dev/null || true
-          git add -f fdds/ 2>/dev/null || true
+
+          for f in scraper_output.log scraper_exit_code.txt list.csv raw_extract.csv \
+                   debug_search_page.html debug_results_page.html debug_detail_page.html; do
+            if [ -e "$f" ]; then
+              git add -f "$f"
+              echo "added: $f"
+            else
+              echo "missing (not created this run): $f"
+            fi
+          done
+          if [ -d fdds ] && [ "$(ls -A fdds 2>/dev/null)" ]; then
+            git add -f fdds/
+            echo "added: fdds/"
+          fi
+
           git commit -m "Automated debug output from run ${{ github.run_id }}" || echo "nothing to commit"
           git push -f origin debug-output
 
