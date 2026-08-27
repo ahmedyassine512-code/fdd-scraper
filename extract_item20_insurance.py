@@ -32,6 +32,17 @@ OUT_CSV = "raw_extract.csv"
 ITEM20_START = re.compile(r"ITEM\s*20\b", re.IGNORECASE)
 ITEM20_END = re.compile(r"ITEM\s*21\b", re.IGNORECASE)
 
+# Anchor on the outlet-summary table itself, not the "ITEM 20" heading text --
+# item titles vary too much across franchisors ("OUTLETS AND FRANCHISEE
+# INFORMATION" vs "LIST OF OUTLETS AND FRANCHISE INFORMATION" vs no "ITEM"
+# prefix at all in a few cases), but the table underneath is far more
+# standardized. Confirmed against the real cohort of 52 downloaded FDDs.
+OUTLET_SUMMARY_MARKER = re.compile(
+    r"SYSTEM\s*-?\s*WIDE\s+(OUTLET|HOTEL|RESTAURANT|STUDIO)\s+SUMMARY", re.IGNORECASE
+)
+BARE_TABLE1_MARKER = re.compile(r"TABLE\s*N[O0]\.?\s*1\b", re.IGNORECASE)
+ITEM20_ANY = re.compile(r"ITEM\s*20\b", re.IGNORECASE)
+
 INSURANCE_KEYWORDS = re.compile(
     r"(insurance|liability coverage|additional insured|certificate of "
     r"insurance|endorsement|workers['\u2019]?\s*compensation)",
@@ -53,41 +64,52 @@ def extract_item20(full_text):
     Find the real Item 20 section body -- not an informal front-matter
     reference to it, and not its own Table-of-Contents line.
 
-    Confirmed against a real downloaded FDD (MIF, L.L.C., 1.26M chars):
-    "ITEM 20" matches six times -- three are the FTC-mandated intro FAQ
-    text nearly every FDD carries verbatim ("...you can find their names
-    in Item 20 or Exhibits L and M..."), one is the real Table of
-    Contents line ("ITEM 20 OUTLETS AND FRANCHISEE INFORMATION .... 113"),
-    and only the last one is the actual section heading followed by the
-    real outlet table. Taking the *first* match (the old behavior) always
-    grabbed one of the boilerplate hits, which is why item20_raw_text
-    kept landing around 250-320 characters across unrelated companies --
-    a real Item 20 section (a multi-page outlet-count table) is never
-    that short.
+    v1 (first attempt) took the *first* "ITEM 20" match -- always grabbed
+    FTC-mandated intro FAQ boilerplate or the TOC line, since those come
+    before the real section. item20_raw_text kept landing around 250-320
+    chars across unrelated companies as a result.
 
-    The boilerplate/TOC hits are all followed by the next "ITEM 21" match
-    within a few hundred characters at most; the real section runs for
-    thousands of characters (an actual table) before hitting Item 21's
-    own heading. So: check every (item20 match, next item21 match) pair
-    and keep the one with the largest gap -- on every FDD structure this
-    is, by a wide margin, the real section. Ties go to the later match,
-    since front-matter and the TOC always precede the real body.
+    v2 tried "keep the (item20, next item21) pair with the largest gap",
+    reasoning boilerplate/TOC hits sit close to their next "ITEM 21" match
+    while the real section runs for thousands of characters first. This
+    mostly worked but backfired on MIF, L.L.C. (Marriott/JW Marriott):
+    the front-matter mention's "next ITEM 21" landed on the TOC's own
+    Item 21 line, and the intervening legal boilerplate happened to be
+    LONGER (11,719 chars) than the real outlet table (11,062 chars) --
+    a numeric coincidence, not a structural signal, so v2 picked the
+    boilerplate.
+
+    v3 (this version) anchors on the outlet-summary TABLE itself instead
+    of the "ITEM 20" heading text. Item titles vary too much across
+    franchisors to use as an anchor ("OUTLETS AND FRANCHISEE INFORMATION"
+    vs "LIST OF OUTLETS AND FRANCHISE INFORMATION" vs no "ITEM" prefix at
+    all in a couple of real filings), but the table underneath is far
+    more standardized ("Systemwide Outlet Summary" / "Table No. 1").
+    Finds the first such table marker in the document, walks backward up
+    to 400 chars to find the nearest preceding "ITEM 20" (whatever its
+    exact wording), and runs from there to the next "ITEM 21" match.
+    Validated against the real cohort of 52 downloaded Wisconsin FDDs.
     """
-    starts = list(ITEM20_START.finditer(full_text))
-    if not starts:
+    anchor = OUTLET_SUMMARY_MARKER.search(full_text)
+    if not anchor:
+        anchor = BARE_TABLE1_MARKER.search(full_text)
+    if not anchor:
         return ""
 
-    best_chunk = ""
-    best_gap = -1
-    for m in starts:
-        end = ITEM20_END.search(full_text, m.end())
-        end_pos = end.start() if end else min(len(full_text), m.start() + 20000)
-        gap = end_pos - m.start()
-        if gap >= best_gap:
-            best_gap = gap
-            best_chunk = full_text[m.start():end_pos]
+    table_pos = anchor.start()
+    window_start = max(0, table_pos - 400)
+    preceding = full_text[window_start:table_pos]
+    item20_matches = list(ITEM20_ANY.finditer(preceding))
+    if not item20_matches:
+        # table found but no "ITEM 20" heading nearby -- rare, but take
+        # the table position itself rather than returning nothing
+        start_pos = table_pos
+    else:
+        start_pos = window_start + item20_matches[-1].start()
 
-    return best_chunk.strip()
+    end = ITEM20_END.search(full_text, table_pos)
+    end_pos = end.start() if end else min(len(full_text), start_pos + 30000)
+    return full_text[start_pos:end_pos].strip()
 
 
 def extract_insurance_paragraphs(full_text):
